@@ -26,10 +26,12 @@ El propósito de este producto es desarrollar el submódulo "Cargar el PUC" pert
 *   **Criterio de Aceptación 1:** El sistema solo permite archivos `.csv`. Cualquier otra extensión será rechazada visualmente en el frontend antes del envío.
 *   **Criterio de Aceptación 2:** La interfaz muestra un indicador de "Cargando..." que bloquea acciones adicionales durante la validación sincrónica.
 
-#### US-02: Validación Estructural y Rechazo Estricto (Strict Rejection)
-**Como** analista financiero, **quiero** que el sistema valide la estructura de mi archivo antes de procesarlo, **para** garantizar que no hay datos corruptos o cuentas no válidas.
+#### US-02: Validación Estructural, Control de Unicidad Mensual y Rechazo Estricto (Strict Rejection)
+**Como** analista financiero, **quiero** que el sistema valide la estructura de mi archivo y verifique que el mes no haya sido cargado previamente antes de procesarlo, **para** garantizar que no hay datos corruptos, cuentas no válidas ni duplicidad de periodos contables.
 *   **Criterio de Aceptación 1:** El backend lee el archivo e identifica cabeceras y tipos de datos. Si detecta un error, se aborta toda la operación (No hay inserción parcial en base de datos).
 *   **Criterio de Aceptación 2:** El sistema devuelve una tabla de errores al usuario mostrando: `Número de Fila | Código de Cuenta | Descripción del Error (ej. "Monto no numérico", "Cuenta no existe en catálogo")`.
+*   **Criterio de Aceptación 3 (Bloqueo de Mes Duplicado):** El sistema no permitirá subir un archivo PUC para un periodo (`Mes/Año`) que ya tenga un cargue registrado. Si el periodo ya existe, rechazará la solicitud indicando al usuario que debe eliminar primero el cargue existente de ese mes para poder generar uno nuevo.
+*   **Criterio de Aceptación 4 (Eliminación de Cargue Mensual):** El usuario podrá eliminar el cargue de un mes existente, lo cual borrará en cascada sus saldos contables y los flujos calculados por este submódulo para habilitar una nueva carga limpia.
 
 #### US-03: Cálculo de Exigibilidades y Bandas Temporales (Core Business Logic)
 **Como** gerente de riesgos, **quiero** que el sistema procese automáticamente las reglas de liquidez sobre el archivo PUC limpio, **para** tener una proyección exacta del requerimiento de caja en 4 bandas temporales.

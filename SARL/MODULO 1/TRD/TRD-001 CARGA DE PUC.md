@@ -24,34 +24,48 @@ Dado el requerimiento de procesamiento **síncrono**, el backend en Node.js impl
 
 ### 2. Modelo de Datos (PostgreSQL)
 
-Se proponen las siguientes entidades normalizadas para este MVP:
+Dado que el proyecto global corresponde al **Sistema IRL** y este desarrollo es el **Submódulo 1 (Carga de PUC)** dentro del Macro-Módulo **SARL**, el esquema relacional se diseña en 4 entidades desacopladas para permitir que futuros submódulos (Cartera, CDATs, Ahorros, etc.) alimenten el mismo periodo de evaluación sin colisionar:
 
-#### Tabla: `sarl_puc_batches`
-Registra la cabecera de la carga para trazabilidad.
+#### Tabla 1: `sarl_evaluation_periods` (Entidad Maestra Transversal)
+Centraliza el periodo contable (`Mes/Año`) evaluado por todos los submódulos de SARL.
 * `id` (UUID, PK)
-* `period_month` (INT)
-* `period_year` (INT)
-* `status` (VARCHAR) -> Ej. 'PROCESSED', 'REJECTED'
-* `uploaded_by` (UUID, FK a users)
+* `period_year` (INT, NOT NULL)
+* `period_month` (INT, NOT NULL, `1..12`)
+* `status` (VARCHAR) -> `'OPEN'`, `'CALCULATED'`, `'CLOSED'`
+* `created_at` (TIMESTAMP)
+* **Restricción:** `UNIQUE (period_year, period_month)`
+
+#### Tabla 2: `sarl_puc_batches` (Cabecera de Carga — Submódulo 1)
+Registra la cabecera de la carga del PUC. Por regla de negocio estricta, **solo puede existir una carga de PUC por periodo**. Para recargar un mes, el usuario debe eliminar la carga existente.
+* `id` (UUID, PK)
+* `period_id` (UUID, FK a `sarl_evaluation_periods`, **UNIQUE**, `ON DELETE CASCADE`)
+* `status` (VARCHAR) -> `'PROCESSED'`, `'REJECTED'`
+* `uploaded_by` (UUID NULL)
 * `created_at` (TIMESTAMP)
 
-#### Tabla: `sarl_puc_records`
-Almacena el detalle contable transaccional del mes.
+#### Tabla 3: `sarl_puc_records` (Detalle Contable — Submódulo 1)
+Almacena el detalle contable transaccional del mes cargado.
 * `id` (UUID, PK)
-* `batch_id` (UUID, FK a sarl_puc_batches)
-* `account_code` (VARCHAR(15), Indexado) -> Ej. '510500'
-* `account_name` (VARCHAR)
+* `batch_id` (UUID, FK a `sarl_puc_batches`, `ON DELETE CASCADE`)
+* `account_code` (VARCHAR(15), Indexado) -> Ej. `'510500'`
+* `account_name` (VARCHAR(255))
 * `balance` (DECIMAL(19,4)) -> Precisión financiera.
 
-#### Tabla: `sarl_irl_results`
-Almacena el cálculo resultante de las bandas.
+#### Tabla 4: `sarl_irl_band_flows` (Flujos de Bandas por Rubro y Submódulo)
+Almacena los flujos calculados en las 4 bandas desglosados por módulo de origen (`source_module`) y concepto (`concept_code`), permitiendo consolidar el Anexo 1 de la Supersolidaria entre múltiples submódulos.
 * `id` (UUID, PK)
-* `batch_id` (UUID, FK)
-* `admin_expenses_avg` (DECIMAL(19,4)) -> Promedio 12 meses (Cuentas 510500, 511000)
-* `band_1_1_15` (DECIMAL(19,4)) -> Salidas y entradas esperadas días 1-15
-* `band_2_16_30` (DECIMAL(19,4)) -> Salidas y entradas esperadas días 16-30
-* `band_3_31_60` (DECIMAL(19,4)) -> Salidas y entradas esperadas días 31-60
-* `band_4_61_90` (DECIMAL(19,4)) -> Salidas y entradas esperadas días 61-90
+* `period_id` (UUID, FK a `sarl_evaluation_periods`, `ON DELETE CASCADE`)
+* `source_batch_id` (UUID, FK a `sarl_puc_batches`, `ON DELETE CASCADE`)
+* `source_module` (VARCHAR(30)) -> Ej. `'MODULO_1_PUC'`
+* `flow_type` (VARCHAR(30)) -> `'ACTIVO_LIQUIDO'`, `'ENTRADA'`, `'SALIDA_CONTRACTUAL'`, `'SALIDA_ESTIMADA'`
+* `concept_code` (VARCHAR(50)) -> Ej. `'GASTOS_ADMIN'`, `'CREDITOS_911500'`, `'FONDOS_SOCIALES'`
+* `base_amount` (DECIMAL(19,4)) -> Valor base o promedio de 12 meses calculado
+* `band_1_1_15` (DECIMAL(19,4)) -> Flujo días 1-15
+* `band_2_16_30` (DECIMAL(19,4)) -> Flujo días 16-30
+* `band_3_31_60` (DECIMAL(19,4)) -> Flujo días 31-60
+* `band_4_61_90` (DECIMAL(19,4)) -> Flujo días 61-90
+* `created_at` (TIMESTAMP)
+* **Restricción:** `UNIQUE (period_id, concept_code)`
 
 ### 3. Contratos de API (Endpoints)
 
@@ -63,14 +77,41 @@ Almacena el cálculo resultante de las bandas.
     {
       "status": "success",
       "data": {
-        "batch_id": "uuid-1234",
+        "period_id": "uuid-period-01",
+        "batch_id": "uuid-batch-1234",
+        "flows": [
+          {
+            "concept_code": "GASTOS_ADMIN",
+            "base_amount": 25000.00,
+            "band_1_1_15": 12500.00,
+            "band_2_16_30": 12500.00,
+            "band_3_31_60": 25000.00,
+            "band_4_61_90": 25000.00
+          },
+          {
+            "concept_code": "CREDITOS_911500",
+            "base_amount": 300000.00,
+            "band_1_1_15": 150000.00,
+            "band_2_16_30": 150000.00,
+            "band_3_31_60": 0,
+            "band_4_61_90": 0
+          }
+        ],
         "bands_summary": {
-          "band_1": 150000.00,
-          "band_2": 150000.00,
-          "band_3": 0,
-          "band_4": 0
+          "band_1": 162500.00,
+          "band_2": 162500.00,
+          "band_3": 25000.00,
+          "band_4": 25000.00
         }
       }
+    }
+    ```
+*   **Error Response - Mes Duplicado (409 Conflict):**
+    ```json
+    {
+      "status": "error",
+      "message": "Ya existe un cargue de PUC para el periodo solicitado. Debe eliminar el cargue actual antes de generar uno nuevo.",
+      "existing_batch_id": "uuid-batch-1234"
     }
     ```
 *   **Error Response - Strict Rejection (422 Unprocessable Entity):**
@@ -82,6 +123,16 @@ Almacena el cálculo resultante de las bandas.
         { "row": 14, "account": "911500A", "issue": "Código de cuenta no numérico" },
         { "row": 15, "account": "510500", "issue": "Saldo contiene caracteres inválidos" }
       ]
+    }
+    ```
+
+#### `DELETE /api/v1/sarl/puc/:batchId`
+Elimina el lote cargado del mes junto con sus registros en `sarl_puc_records` y sus flujos asociados en `sarl_irl_band_flows` (vía `ON DELETE CASCADE`), habilitando una nueva carga limpia para ese periodo.
+*   **Success Response (200 OK):**
+    ```json
+    {
+      "status": "success",
+      "message": "Cargue de PUC y flujos del periodo eliminados correctamente."
     }
     ```
 

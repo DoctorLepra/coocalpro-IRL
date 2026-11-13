@@ -26,6 +26,7 @@ La interfaz del submódulo operará bajo una máquina de estados finita estricta
 *   **Proceso del Sistema:** Angular emite la petición `POST /upload` al backend Node.js y espera la respuesta HTTP.
 *   **Transición:**
     *   Si Backend responde `201 Created` -> Pasa al Estado [SUCCESS].
+    *   Si Backend responde `409 Conflict` (El mes/año ya fue cargado previamente) -> Muestra alerta de conflicto con la opción de eliminar el cargue anterior de ese mes para poder subir uno nuevo.
     *   Si Backend responde `422 Unprocessable Entity` (Fallo estructural/lógico) -> Pasa al Estado [ERROR_REJECTION].
     *   Si Backend responde `500/504` (Error de red/servidor) -> Pasa al Estado [ERROR_SYSTEM].
 

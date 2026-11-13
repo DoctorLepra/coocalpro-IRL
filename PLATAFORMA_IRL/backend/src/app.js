@@ -20,7 +20,7 @@ app.get('/api/v1/health', async(req, res) => {
         res.status(200).json({
             status : 'success',
             message : 'API IRL funcional y conectada a PostgreSQL',
-            db_time: dataDB.row[0].db_time
+            db_time: dataDB.rows[0].db_time
         });
     } catch (error) {
         return res.status(500).json({

@@ -4,8 +4,8 @@ require('dotenv').config();
 //Se crea conexion a base de datos mediante POOL para gestionar mejor las conexion a la BD generando mas conexiones segun como se requiera con un maximo de 10 conexiones
 
 const pool = new Pool({
-    host: process.env.HOST,
-    port: Number(process.env.PORT) || 5432,
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT) || 5432,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
