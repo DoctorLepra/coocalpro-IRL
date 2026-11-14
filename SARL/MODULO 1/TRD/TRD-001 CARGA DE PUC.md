@@ -15,47 +15,31 @@ Dado el requerimiento de procesamiento **síncrono**, el backend en Node.js impl
    * **Controladores (`controllers/`):** Reciben la petición HTTP (`PucUploadController`) y coordinan la respuesta (`201` o `422`).
    * **Middlewares (`middlewares/`):** Subida de archivos (`multer` configurado en memoria limitando a 20MB y validando MIME-Type).
    * **Servicios (`services/`):** `CsvParserService` (parsea el CSV y delega la validación estructural) e `IRLCalculatorService` (ejecuta las reglas matemáticas de bandas en memoria de forma pura con `decimal.js`, desacoplado de SQL).
-3. **Capa de Modelos de Dominio y Esquemas (`models/`):**
-   * Define los contratos de datos, DTOs y esquemas de validación estricta con `Zod` (`PucBatchModel`, `PucRecordModel`, `IRLResultModel`), garantizando que ninguna estructura inválida pase hacia el motor matemático o hacia la base de datos.
+3. **Capa de Modelos de Dominio y Esquemas (`models/puc.model.js`):**
+   * Centraliza en un único modelo por submódulo (`PucModel`) los contratos de datos, normalización de cabeceras del CSV (`CUENTA`, `DESCRIPCION`, `Saldo`), esquemas de validación estricta con `Zod` (`BatchSchema`, `RecordSchema`) y construcción de flujos (`createBandFlow` con `decimal.js`), garantizando que ninguna estructura inválida pase hacia el motor matemático o hacia la base de datos.
 4. **Capa de Acceso a Datos / Repositorios (`repositories/`):**
-   * `PucRepository` abstrae todas las consultas SQL hacia PostgreSQL (ej. consulta del histórico de los últimos 11 meses de gastos administrativos).
-   * Gestiona la persistencia atómica coordinando la inserción en `sarl_puc_batches`, `sarl_puc_records` y `sarl_irl_results`.
+   * `PucRepository` abstrae todas las consultas SQL hacia PostgreSQL (ej. verificación de unicidad por `period_date` y consulta del histórico de los últimos 11 meses de gastos administrativos).
+   * Gestiona la persistencia atómica coordinando la inserción en `sarl_puc_records` y `sarl_irl_band_flows`.
 5. **Capa de Persistencia (PostgreSQL):** Utiliza transacciones atómicas (`BEGIN`, `COMMIT`, `ROLLBACK`) ejecutadas a través del repositorio para garantizar que no existan estados parciales en la base de datos.
 
 ### 2. Modelo de Datos (PostgreSQL)
 
-Dado que el proyecto global corresponde al **Sistema IRL** y este desarrollo es el **Submódulo 1 (Carga de PUC)** dentro del Macro-Módulo **SARL**, el esquema relacional se diseña en 4 entidades desacopladas para permitir que futuros submódulos (Cartera, CDATs, Ahorros, etc.) alimenten el mismo periodo de evaluación sin colisionar:
+El esquema relacional se estructura en **2 tablas principales** vinculadas mediante `period_date (DATE)` (normalizado al primer día del mes evaluado, ej. `'2026-10-01'`). Esto permite consultas temporales directas con intervalos nativos de PostgreSQL (`INTERVAL '11 months'`) y permite que futuros submódulos de SARL inserten sus propios flujos en `sarl_irl_band_flows`:
 
-#### Tabla 1: `sarl_evaluation_periods` (Entidad Maestra Transversal)
-Centraliza el periodo contable (`Mes/Año`) evaluado por todos los submódulos de SARL.
+#### Tabla 1: `sarl_puc_records` (Detalle Contable Mensual — Submódulo 1)
+Almacena el detalle contable del PUC del mes cargado. Por regla de negocio estricta, **no se permite cargar dos veces el mismo `period_date`**; para recargar un mes, el usuario debe eliminar primero los registros de ese periodo.
 * `id` (UUID, PK)
-* `period_year` (INT, NOT NULL)
-* `period_month` (INT, NOT NULL, `1..12`)
-* `status` (VARCHAR) -> `'OPEN'`, `'CALCULATED'`, `'CLOSED'`
-* `created_at` (TIMESTAMP)
-* **Restricción:** `UNIQUE (period_year, period_month)`
-
-#### Tabla 2: `sarl_puc_batches` (Cabecera de Carga — Submódulo 1)
-Registra la cabecera de la carga del PUC. Por regla de negocio estricta, **solo puede existir una carga de PUC por periodo**. Para recargar un mes, el usuario debe eliminar la carga existente.
-* `id` (UUID, PK)
-* `period_id` (UUID, FK a `sarl_evaluation_periods`, **UNIQUE**, `ON DELETE CASCADE`)
-* `status` (VARCHAR) -> `'PROCESSED'`, `'REJECTED'`
-* `uploaded_by` (UUID NULL)
-* `created_at` (TIMESTAMP)
-
-#### Tabla 3: `sarl_puc_records` (Detalle Contable — Submódulo 1)
-Almacena el detalle contable transaccional del mes cargado.
-* `id` (UUID, PK)
-* `batch_id` (UUID, FK a `sarl_puc_batches`, `ON DELETE CASCADE`)
+* `period_date` (DATE, NOT NULL, Indexado) -> Ej. `'2026-10-01'`
 * `account_code` (VARCHAR(15), Indexado) -> Ej. `'510500'`
 * `account_name` (VARCHAR(255))
 * `balance` (DECIMAL(19,4)) -> Precisión financiera.
+* `created_at` (TIMESTAMP)
+* **Restricción:** `UNIQUE (period_date, account_code)`
 
-#### Tabla 4: `sarl_irl_band_flows` (Flujos de Bandas por Rubro y Submódulo)
-Almacena los flujos calculados en las 4 bandas desglosados por módulo de origen (`source_module`) y concepto (`concept_code`), permitiendo consolidar el Anexo 1 de la Supersolidaria entre múltiples submódulos.
+#### Tabla 2: `sarl_irl_band_flows` (Flujos de Bandas por Rubro y Submódulo)
+Almacena los flujos calculados en las 4 bandas desglosados por fecha de periodo (`period_date`), módulo de origen (`source_module`) y concepto (`concept_code`), permitiendo consolidar el Anexo 1 de la Supersolidaria entre múltiples submódulos.
 * `id` (UUID, PK)
-* `period_id` (UUID, FK a `sarl_evaluation_periods`, `ON DELETE CASCADE`)
-* `source_batch_id` (UUID, FK a `sarl_puc_batches`, `ON DELETE CASCADE`)
+* `period_date` (DATE, NOT NULL, Indexado) -> Ej. `'2026-10-01'`
 * `source_module` (VARCHAR(30)) -> Ej. `'MODULO_1_PUC'`
 * `flow_type` (VARCHAR(30)) -> `'ACTIVO_LIQUIDO'`, `'ENTRADA'`, `'SALIDA_CONTRACTUAL'`, `'SALIDA_ESTIMADA'`
 * `concept_code` (VARCHAR(50)) -> Ej. `'GASTOS_ADMIN'`, `'CREDITOS_911500'`, `'FONDOS_SOCIALES'`
@@ -65,20 +49,19 @@ Almacena los flujos calculados en las 4 bandas desglosados por módulo de origen
 * `band_3_31_60` (DECIMAL(19,4)) -> Flujo días 31-60
 * `band_4_61_90` (DECIMAL(19,4)) -> Flujo días 61-90
 * `created_at` (TIMESTAMP)
-* **Restricción:** `UNIQUE (period_id, concept_code)`
+* **Restricción:** `UNIQUE (period_date, concept_code)`
 
 ### 3. Contratos de API (Endpoints)
 
 #### `POST /api/v1/sarl/puc/upload`
 *   **Content-Type:** `multipart/form-data`
-*   **Payload:** `file` (.csv), `period_month` (int), `period_year` (int)
+*   **Payload:** `file` (.csv), `period_date` (date string `YYYY-MM-DD`, ej. `'2026-10-01'`)
 *   **Success Response (201 Created):**
     ```json
     {
       "status": "success",
       "data": {
-        "period_id": "uuid-period-01",
-        "batch_id": "uuid-batch-1234",
+        "period_date": "2026-10-01",
         "flows": [
           {
             "concept_code": "GASTOS_ADMIN",
@@ -110,8 +93,8 @@ Almacena los flujos calculados en las 4 bandas desglosados por módulo de origen
     ```json
     {
       "status": "error",
-      "message": "Ya existe un cargue de PUC para el periodo solicitado. Debe eliminar el cargue actual antes de generar uno nuevo.",
-      "existing_batch_id": "uuid-batch-1234"
+      "message": "Ya existe un cargue de PUC para el periodo 2026-10-01. Debe eliminar el cargue actual antes de generar uno nuevo.",
+      "period_date": "2026-10-01"
     }
     ```
 *   **Error Response - Strict Rejection (422 Unprocessable Entity):**
@@ -126,8 +109,8 @@ Almacena los flujos calculados en las 4 bandas desglosados por módulo de origen
     }
     ```
 
-#### `DELETE /api/v1/sarl/puc/:batchId`
-Elimina el lote cargado del mes junto con sus registros en `sarl_puc_records` y sus flujos asociados en `sarl_irl_band_flows` (vía `ON DELETE CASCADE`), habilitando una nueva carga limpia para ese periodo.
+#### `DELETE /api/v1/sarl/puc/:periodDate`
+Elimina de forma atómica los registros de `sarl_puc_records` y los flujos de `MODULO_1_PUC` en `sarl_irl_band_flows` correspondientes a `periodDate` (`YYYY-MM-DD`), habilitando una nueva carga limpia para ese mes.
 *   **Success Response (200 OK):**
     ```json
     {

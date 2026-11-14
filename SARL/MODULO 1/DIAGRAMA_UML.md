@@ -17,7 +17,7 @@ actor "Analista" as User
 participant "Angular UI\n(DropzoneComponent)" as UI
 participant "Node.js API\n(PucUploadController)" as Controller
 participant "Validation Service\n(CsvParserService)" as Validator
-participant "Domain Models\n(PucRecordModel / Zod)" as Model
+participant "Domain Model\n(PucModel / Zod)" as Model
 participant "Calculation Engine\n(IRLCalculatorService)" as Calculator
 participant "Data Access Layer\n(PucRepository)" as Repository
 database "PostgreSQL\n(SARL_DB)" as DB
@@ -29,13 +29,18 @@ UI -> UI : Bloquear interfaz (Estado PROCESSING)
 UI -> Controller : POST /api/v1/sarl/puc/upload (FormData)
 activate Controller
 
-Controller -> Repository : findBatchByPeriod(year, month)
+Controller -> Model : validatePeriod(period_date)
+activate Model
+Model --> Controller : period_date válido (YYYY-MM-DD)
+deactivate Model
+
+Controller -> Repository : existsPeriod(period_date)
 activate Repository
-Repository -> DB : SELECT batch por (period_year, period_month)
+Repository -> DB : SELECT 1 FROM sarl_puc_records WHERE period_date = $1 LIMIT 1
 activate DB
 DB --> Repository : Resultado
 deactivate DB
-Repository --> Controller : Batch existente o null
+Repository --> Controller : Boolean (Existe o no)
 deactivate Repository
 
 alt Periodo Ya Cargado (Bloqueo de Duplicidad)
@@ -46,9 +51,9 @@ else Periodo Disponible
     Controller -> Validator : Buffer CSV (hasta 20MB)
     activate Validator
     Validator -> Validator : Parsear CSV a JSON y sanitizar celdas
-    Validator -> Model : Validar filas contra PucRecordSchema (Zod)
+    Validator -> Model : validateRecordRow(rawRow, rowNumber) [CUENTA, DESCRIPCION, Saldo]
     activate Model
-    Model --> Validator : Resultado de validación (Filas válidas o Errores)
+    Model --> Validator : Resultado de validación (Filas válidas con Decimal o Errores)
     deactivate Model
     alt Estructura Inválida (Strict Rejection)
         Validator --> Controller : Error (Array de filas defectuosas)
@@ -56,43 +61,41 @@ else Periodo Disponible
         UI -> UI : Cambiar a Estado ERROR_REJECTION
         UI --> User : Renderizar Tabla de Errores
     else Estructura Válida
-        Validator --> Controller : Array<PucRecordModel> (Datos Limpios)
+        Validator --> Controller : Array<CleanRecord> (Datos Limpios)
         deactivate Validator
         
-        Controller -> Repository : getHistoricalAdminExpenses(year, month)
+        Controller -> Repository : getHistoricalAdminExpenses(period_date)
         activate Repository
-        Repository -> DB : SELECT histórico de Gastos Admin (Cuentas 510500, 511000)
+        Repository -> DB : SELECT histórico 11 meses (period_date - INTERVAL '11 months')
         activate DB
         DB --> Repository : Histórico 11 meses
         deactivate DB
         Repository --> Controller : Array Histórico
         deactivate Repository
 
-        Controller -> Calculator : Ejecutar cálculo IRL (Datos Limpios + Histórico)
+        Controller -> Calculator : Ejecutar cálculo IRL (Datos Limpios + Histórico + period_date)
         activate Calculator
         Calculator -> Calculator : Operación Gastos Admin (Promedio con decimal.js)
         Calculator -> Calculator : Operación Créditos (911500) -> 50% Banda 1, 50% Banda 2
         Calculator -> Calculator : Operación Fondos Sociales -> Prorrateo lineal
-        Calculator -> Model : Instanciar IRLBandFlowModel[] (Flujos por Concepto)
+        Calculator -> Model : createBandFlow(...) (Formatear flujos a Decimal(19,4))
         activate Model
-        Model --> Calculator : Flujos validados + Resumen 4 Bandas
+        Model --> Calculator : Flujos validados
         deactivate Model
         Calculator --> Controller : CalculationResultDTO
         deactivate Calculator
         
-        Controller -> Repository : saveBatchWithFlows(periodMeta, cleanRecords, bandFlows)
+        Controller -> Repository : savePeriodData(period_date, cleanRecords, bandFlows)
         activate Repository
         Repository -> DB : BEGIN Transaction
         activate DB
-        Repository -> DB : UPSERT sarl_evaluation_periods (Periodo)
-        Repository -> DB : INSERT sarl_puc_batches (Cabecera UNIQUE por period_id)
-        Repository -> DB : INSERT sarl_puc_records (Detalle masivo)
-        Repository -> DB : INSERT sarl_irl_band_flows (Flujos por rubro)
+        Repository -> DB : INSERT sarl_puc_records (Detalle masivo del mes)
+        Repository -> DB : INSERT sarl_irl_band_flows (Flujos por rubro del mes)
         
         alt Inserción Exitosa
             Repository -> DB : COMMIT Transaction
             DB --> Repository : Éxito
-            Repository --> Controller : batch_id
+            Repository --> Controller : OK
             deactivate Repository
             Controller --> UI : HTTP 201 Created + Resumen Bandas
             UI -> UI : Cambiar a Estado SUCCESS
@@ -122,34 +125,18 @@ Este diagrama modela la relación entre los servicios de negocio principales en 
 skinparam classAttributeIconSize 0
 
 package "Capa de Base de Datos (PostgreSQL)" <<Database>> {
-    class sarl_evaluation_periods {
-        + id : UUID [PK]
-        + period_year : INT [UNIQUE]
-        + period_month : INT [UNIQUE]
-        + status : VARCHAR
-        + created_at : TIMESTAMP
-    }
-
-    class sarl_puc_batches {
-        + id : UUID [PK]
-        + period_id : UUID [FK, UNIQUE]
-        + status : VARCHAR
-        + uploaded_by : UUID
-        + created_at : TIMESTAMP
-    }
-
     class sarl_puc_records {
         + id : UUID [PK]
-        + batch_id : UUID [FK]
+        + period_date : DATE [INDEX]
         + account_code : VARCHAR(15)
-        + account_name : VARCHAR
+        + account_name : VARCHAR(255)
         + balance : DECIMAL(19,4)
+        + created_at : TIMESTAMP
     }
 
     class sarl_irl_band_flows {
         + id : UUID [PK]
-        + period_id : UUID [FK]
-        + source_batch_id : UUID [FK]
+        + period_date : DATE [INDEX]
         + source_module : VARCHAR(30)
         + flow_type : VARCHAR(30)
         + concept_code : VARCHAR(50)
@@ -161,17 +148,14 @@ package "Capa de Base de Datos (PostgreSQL)" <<Database>> {
         + created_at : TIMESTAMP
     }
 
-    sarl_evaluation_periods "1" -- "0..1" sarl_puc_batches : period_id (UNIQUE)
-    sarl_evaluation_periods "1" -- "0..*" sarl_irl_band_flows : period_id
-    sarl_puc_batches "1" -- "0..*" sarl_puc_records : batch_id (CASCADE)
-    sarl_puc_batches "1" -- "0..*" sarl_irl_band_flows : source_batch_id (CASCADE)
+    sarl_puc_records "1..*" .. "1..*" sarl_irl_band_flows : period_date (DATE)
 }
 
 package "Capa de Controladores y Servicios (Node.js)" <<Node>> {
     
     class PucUploadController {
         + uploadFile(req: Request, res: Response) : Promise<void>
-        + deleteBatch(req: Request, res: Response) : Promise<void>
+        + deletePeriod(req: Request, res: Response) : Promise<void>
     }
 
     class CsvParserService {
@@ -181,7 +165,7 @@ package "Capa de Controladores y Servicios (Node.js)" <<Node>> {
     }
 
     class IRLCalculatorService {
-        + calculateBands(cleanData: Array<PucRecordModel>, history: Array<Object>, month: INT) : Array<IRLBandFlowModel>
+        + calculateBands(cleanData: Array<Object>, history: Array<Object>, periodDate: String) : Array<Object>
         - calculateAdminExpenses(currentData: Array, history: Array) : Decimal
         - distributeUnpaidCredits(balance: Decimal) : BandDistributionDTO
         - prorateSocialFunds(balance: Decimal, currentMonth: INT) : BandDistributionDTO
@@ -190,30 +174,12 @@ package "Capa de Controladores y Servicios (Node.js)" <<Node>> {
 
 package "Capa de Modelos de Dominio y Esquemas (Node.js / Zod)" <<Models>> {
 
-    class PucBatchModel {
-        + period_month : INT
-        + period_year : INT
-        + status : VARCHAR
-        + uploaded_by : UUID
-        + validate(input: Object) : PucBatchModel
-    }
-
-    class PucRecordModel {
-        + account_code : String
-        + account_name : String
-        + balance : Decimal
-        + validateRow(rawRow: Object, rowNumber: INT) : ValidationOutcome
-    }
-
-    class IRLBandFlowModel {
-        + source_module : String
-        + flow_type : String
-        + concept_code : String
-        + base_amount : Decimal
-        + band_1_1_15 : Decimal
-        + band_2_16_30 : Decimal
-        + band_3_31_60 : Decimal
-        + band_4_61_90 : Decimal
+    class PucModel {
+        + {static} PeriodSchema : ZodObject
+        + {static} RecordSchema : ZodObject
+        + {static} validatePeriod(input: Object) : SafeParseReturnType
+        + {static} validateRecordRow(rawRow: Object, rowNumber: INT) : ValidationOutcome
+        + {static} createBandFlow(flowData: Object) : BandFlowDTO
     }
 }
 
@@ -221,24 +187,20 @@ package "Capa de Acceso a Datos / Repositorios (Node.js)" <<Repository>> {
 
     class PucRepository {
         - dbPool : Pool
-        + findBatchByPeriod(year: INT, month: INT) : Promise<Object|null>
-        + deleteBatchById(batchId: UUID) : Promise<Boolean>
-        + getHistoricalAdminExpenses(year: INT, month: INT) : Promise<Array<Object>>
-        + saveBatchWithFlows(batch: PucBatchModel, records: Array<PucRecordModel>, flows: Array<IRLBandFlowModel>) : Promise<UUID>
+        + existsPeriod(periodDate: String) : Promise<Boolean>
+        + deleteByPeriod(periodDate: String) : Promise<Boolean>
+        + getHistoricalAdminExpenses(periodDate: String) : Promise<Array<Object>>
+        + savePeriodData(periodDate: String, records: Array<Object>, flows: Array<Object>) : Promise<void>
     }
 }
 
 PucUploadController --> CsvParserService : usa
 PucUploadController --> IRLCalculatorService : usa
 PucUploadController --> PucRepository : usa
-CsvParserService ..> PucRecordModel : valida con
-IRLCalculatorService ..> IRLBandFlowModel : construye
-PucRepository ..> PucBatchModel : recibe
-PucRepository ..> PucRecordModel : recibe
-PucRepository ..> IRLBandFlowModel : recibe
-PucRepository ..> sarl_evaluation_periods : gestiona
-PucRepository ..> sarl_puc_batches : inserta/elimina (ACID)
-PucRepository ..> sarl_puc_records : inserta (Batch ACID)
-PucRepository ..> sarl_irl_band_flows : consulta e inserta (ACID)
+PucUploadController ..> PucModel : valida period_date con
+CsvParserService ..> PucModel : valida filas CSV con
+IRLCalculatorService ..> PucModel : formatea flujos con
+PucRepository ..> sarl_puc_records : consulta/inserta/elimina (ACID)
+PucRepository ..> sarl_irl_band_flows : consulta/inserta/elimina (ACID)
 @enduml
 ```

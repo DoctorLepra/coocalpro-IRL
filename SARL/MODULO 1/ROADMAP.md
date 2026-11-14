@@ -18,11 +18,11 @@
 #### Sprint 1: Foundation & Data Pipeline (Backend)
 **Objetivo:** Preparar el terreno de datos y el motor de recepción de archivos.
 * **Tareas Clave:**
-  * Scripting y migración de base de datos PostgreSQL (`sarl_evaluation_periods`, `sarl_puc_batches` con restricción única por periodo, `sarl_puc_records`, `sarl_irl_band_flows`).
+  * Scripting y migración de base de datos PostgreSQL en 2 tablas (`sarl_puc_records` y `sarl_irl_band_flows` vinculadas por `period_date DATE`).
   * Configuración del servidor Node.js/Express con arquitectura en capas (`controllers`, `services`, `models`, `repositories`).
   * Implementación de middleware `multer` (Límite 20MB, validación de Mime-Types).
   * Desarrollo del parser CSV (conversión de *stream* a *buffer* JSON), validación estructural con `Zod` y sanitización anti-CSV Injection.
-  * Control de no duplicidad de periodo (`HTTP 409 Conflict`) y endpoint de eliminación de lote mensual (`DELETE /api/v1/sarl/puc/:batchId`).
+  * Control de no duplicidad de periodo (`HTTP 409 Conflict`) y endpoint de eliminación por `period_date` (`DELETE /api/v1/sarl/puc/:periodDate`).
 * **Entregable:** Endpoints base que validan unicidad del mes, reciben el archivo, lo parsean o permiten eliminar un mes cargado previamente.
 
 #### Sprint 2: Motor Matemático y Reglas de Negocio (Backend)
