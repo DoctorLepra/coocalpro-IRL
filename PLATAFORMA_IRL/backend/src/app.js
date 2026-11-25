@@ -13,6 +13,7 @@ app.use(cors());
 app.use(morgan('dev'));
 app.use(express.json());
 
+const sarlRoutes = require('./routes/sarl');
 //Endpoint inicial de cargue y diagnostico del servidor
 app.get('/api/v1/health', async(req, res) => {
     try {
@@ -30,6 +31,8 @@ app.get('/api/v1/health', async(req, res) => {
         });
     }
 })
+
+app.use('/api/v1/sarl', sarlRoutes);
 
 module.exports = app;
 
